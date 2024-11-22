@@ -9,7 +9,16 @@ from pymoo.algorithms.moo.nsga2 import RankAndCrowdingSurvival
 from pymoo.termination import get_termination
 from pymoo.core.problem import Problem
 import math
-from pymoo.core.variable import Real
+from pymoo.core.variable import Real, Integer
+
+class ObstacleParams:
+    def __init__(self, x, i):
+        self.l = x[f"l{i}"]
+        self.w = x[f"w{i}"]
+        self.h = x[f"h{i}"]
+        self.x = x[f"x{i}"]
+        self.y = x[f"y{i}"]
+        self.r = x[f"r{i}"]
 
 class MHSGenerator(object):
     min_size = Obstacle.Size(2, 2, 10)
@@ -26,49 +35,49 @@ class MHSGenerator(object):
         class ObstacleProblem(Problem):
             def __init__(self):
                 vars = {}
-                vars["l"] = Real(bounds=(MHSGenerator.min_size.l, MHSGenerator.max_size.l))
-                vars["w"] = Real(bounds=(MHSGenerator.min_size.w, MHSGenerator.max_size.w))
-                vars["h"] = Real(bounds=(MHSGenerator.min_size.h, MHSGenerator.max_size.h))
-                vars["x"] = Real(bounds=(MHSGenerator.min_position.x, MHSGenerator.max_position.x))
-                vars["y"] = Real(bounds=(MHSGenerator.min_position.y, MHSGenerator.max_position.y))
-                vars["r"] = Real(bounds=(MHSGenerator.min_position.r, MHSGenerator.max_position.r))
+                vars["n"] = Integer(bounds=(1, budget))
+                for i in range(3):
+                    vars[f"l{i}"] = Real(bounds=(MHSGenerator.min_size.l, MHSGenerator.max_size.l))
+                    vars[f"w{i}"] = Real(bounds=(MHSGenerator.min_size.w, MHSGenerator.max_size.w))
+                    vars[f"h{i}"] = Real(bounds=(MHSGenerator.min_size.h, MHSGenerator.max_size.h))
+                    vars[f"x{i}"] = Real(bounds=(MHSGenerator.min_position.x, MHSGenerator.max_position.x))
+                    vars[f"y{i}"] = Real(bounds=(MHSGenerator.min_position.y, MHSGenerator.max_position.y))
+                    vars[f"r{i}"] = Real(bounds=(MHSGenerator.min_position.r, MHSGenerator.max_position.r))
                 super().__init__(vars=vars, n_obj=1)
 
             def _evaluate(self, x, out, *args, **kwargs):
-                # print(x)
-                l, w, h, x_pos, y_pos, r = x[0]["l"], x[0]["w"], x[0]["h"], x[0]["x"], x[0]["y"], x[0]["r"]
+                num_obstacles = x[0]["n"]
 
-                # Calculate the rotated bounds for all four corners of the rectangle
-                half_l = l / 2
-                half_w = w / 2
-                corners = [
-                    (x_pos + half_l * math.cos(math.radians(r)) - half_w * math.sin(math.radians(r)),
-                     y_pos + half_l * math.sin(math.radians(r)) + half_w * math.cos(math.radians(r))),
-                    (x_pos - half_l * math.cos(math.radians(r)) - half_w * math.sin(math.radians(r)),
-                     y_pos - half_l * math.sin(math.radians(r)) + half_w * math.cos(math.radians(r))),
-                    (x_pos + half_l * math.cos(math.radians(r)) + half_w * math.sin(math.radians(r)),
-                     y_pos + half_l * math.sin(math.radians(r)) - half_w * math.cos(math.radians(r))),
-                    (x_pos - half_l * math.cos(math.radians(r)) + half_w * math.sin(math.radians(r)),
-                     y_pos - half_l * math.sin(math.radians(r)) - half_w * math.cos(math.radians(r)))
-                ]
+                obstacles = []
+
+                for i in range(num_obstacles):
+                    o = ObstacleParams(x[0], i)
+
+                    # Calculate the rotated bounds for all four corners of the rectangle
+                    half_l = o.l / 2
+                    half_w = o.w / 2
+                    o.corners = [
+                        (o.x + half_l * math.cos(math.radians(o.r)) - half_w * math.sin(math.radians(o.r)),
+                            o.y + half_l * math.sin(math.radians(o.r)) + half_w * math.cos(math.radians(o.r))),
+                        (o.x - half_l * math.cos(math.radians(o.r)) - half_w * math.sin(math.radians(o.r)),
+                            o.y - half_l * math.sin(math.radians(o.r)) + half_w * math.cos(math.radians(o.r))),
+                        (o.x + half_l * math.cos(math.radians(o.r)) + half_w * math.sin(math.radians(o.r)),
+                            o.y + half_l * math.sin(math.radians(o.r)) - half_w * math.cos(math.radians(o.r))),
+                        (o.x - half_l * math.cos(math.radians(o.r)) + half_w * math.sin(math.radians(o.r)),
+                            o.y - half_l * math.sin(math.radians(o.r)) - half_w * math.cos(math.radians(o.r)))
+                    ]
+
+                    obstacles.append(o)
 
                 # Check if all corners are within the allowed bounds after rotation
-                valid = all(
+                # The output is the number of invalid obstacles, which we want to minimize (0)
+                num_invalid = sum(1 for i in range(num_obstacles) if not all(
                     MHSGenerator.min_position.x <= x <= MHSGenerator.max_position.x and
                     MHSGenerator.min_position.y <= y <= MHSGenerator.max_position.y
-                    for x, y in corners
-                )
+                    for x, y in obstacles[i].corners
+                ))
 
-                if (MHSGenerator.min_size.l <= l <= MHSGenerator.max_size.l and
-                    MHSGenerator.min_size.w <= w <= MHSGenerator.max_size.w and
-                    MHSGenerator.min_size.h <= h <= MHSGenerator.max_size.h and
-                    MHSGenerator.min_position.x <= x_pos <= MHSGenerator.max_position.x and
-                    MHSGenerator.min_position.y <= y_pos <= MHSGenerator.max_position.y and
-                    MHSGenerator.min_position.r <= r <= MHSGenerator.max_position.r and
-                    valid):
-                    out["F"] = [0]  # Valid coordinates
-                else:
-                    out["F"] = [1]  # Invalid coordinates
+                out["F"] = [num_invalid]
 
         problem = ObstacleProblem()
 
@@ -79,10 +88,14 @@ class MHSGenerator(object):
         res = minimize(problem, algorithm, termination, verbose=1)
 
         print(res.X)
-        size = Obstacle.Size(res.X["l"], res.X["w"], res.X["h"])
-        position = Obstacle.Position(res.X["x"], res.X["y"], 0, res.X["r"])
-        obstacle = Obstacle(size, position)
-        test = TestCase(self.case_study, [obstacle])
+        obstacles = []
+        num_obstacles = res.X["n"]
+        for i in range(num_obstacles):
+            size = Obstacle.Size(res.X[f"l{i}"], res.X[f"w{i}"], res.X[f"h{i}"])
+            position = Obstacle.Position(res.X[f"x{i}"], res.X[f"y{i}"], 0, res.X[f"r{i}"])
+            obstacle = Obstacle(size, position)
+            obstacles.append(obstacle)
+        test = TestCase(self.case_study, obstacles)
         try:
             test.execute()
             distances = test.get_distances()
@@ -124,4 +137,4 @@ class MHSGenerator(object):
 
 if __name__ == "__main__":
     generator = MHSGenerator("case_studies/mission1.yaml")
-    generator.generate(1)
+    generator.generate(2)
