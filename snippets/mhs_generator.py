@@ -12,6 +12,7 @@ from pymoo.termination import get_termination
 from pymoo.core.problem import Problem
 import math
 from pymoo.core.variable import Real, Integer
+from shapely.geometry import Polygon
 
 class ObstacleParams:
     def __init__(self, x, i):
@@ -76,19 +77,26 @@ class MHSGenerator(object):
 
                 # Check if all corners are within the allowed bounds after rotation
                 # The output is the number of invalid obstacles, which we want to minimize (0)
-                num_invalid = sum(1 for i in range(num_obstacles) if not all(
+                num_out_of_bound = sum(1 for i in range(num_obstacles) if not all(
                     MHSGenerator.min_position.x <= x <= MHSGenerator.max_position.x and
                     MHSGenerator.min_position.y <= y <= MHSGenerator.max_position.y
                     for x, y in obstacles[i].corners
                 ))
 
-                out["F"] = [num_invalid]
+                # Check for overlapping obstacles
+                polygons = [Polygon(obstacle.corners) for obstacle in obstacles]
+                num_overlapping = sum(1
+                                      for i in range(num_obstacles)
+                                      for j in range(i + 1, num_obstacles)
+                                      if polygons[i].intersects(polygons[j]))
+
+                out["F"] = [num_out_of_bound + num_overlapping]
 
         problem = ObstacleProblem()
 
         algorithm = MixedVariableGA(pop_size=1, n_offsprings=1, survival=RankAndCrowdingSurvival())
 
-        termination = get_termination("time", "00:00:01")  # 1 second
+        termination = get_termination("time", "00:00:05")  # 5 seconds
 
         res = minimize(problem, algorithm, termination, verbose=1)
 
