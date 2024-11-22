@@ -2,6 +2,8 @@ import random
 from typing import List
 from aerialist.px4.drone_test import DroneTest
 from aerialist.px4.obstacle import Obstacle
+from aerialist.px4.trajectory import Trajectory
+from aerialist.px4.position import Position
 from testcase import TestCase
 from pymoo.optimize import minimize
 from pymoo.core.mixed import MixedVariableGA
@@ -27,7 +29,10 @@ class MHSGenerator(object):
     max_position = Obstacle.Position(30, 40, 0, 90)
 
     def __init__(self, case_study_file: str) -> None:
-        self.case_study = DroneTest.from_yaml(case_study_file)
+        drone_test = DroneTest.from_yaml(case_study_file)
+        # TODO: Check if there is a way to speed up the simulation
+        drone_test.test.speed = drone_test.simulation.speed = 10
+        self.case_study = drone_test
 
     def generate(self, budget: int) -> List[TestCase]:
         test_cases = []
@@ -95,6 +100,11 @@ class MHSGenerator(object):
             position = Obstacle.Position(res.X[f"x{i}"], res.X[f"y{i}"], 0, res.X[f"r{i}"])
             obstacle = Obstacle(size, position)
             obstacles.append(obstacle)
+
+        # Visualize the obstacles without trajectory
+        Trajectory(positions = [Position(0, 0, 0, 0, 0), Position(0, 0, 0, 0, 0)]) \
+            .plot(obstacles = obstacles)
+
         test = TestCase(self.case_study, obstacles)
         try:
             test.execute()
