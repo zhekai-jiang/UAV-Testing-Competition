@@ -35,7 +35,7 @@ class MHSGenerator(object):
         class ObstacleProblem(Problem):
             def __init__(self):
                 vars = {}
-                vars["n"] = Integer(bounds=(1, budget))
+                vars["n"] = Integer(bounds=(1, 3))
                 for i in range(3):
                     vars[f"l{i}"] = Real(bounds=(MHSGenerator.min_size.l, MHSGenerator.max_size.l))
                     vars[f"w{i}"] = Real(bounds=(MHSGenerator.min_size.w, MHSGenerator.max_size.w))
