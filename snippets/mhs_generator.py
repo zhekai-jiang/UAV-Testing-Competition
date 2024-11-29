@@ -14,6 +14,9 @@ import math
 from pymoo.core.variable import Real, Integer
 from shapely.geometry import Polygon
 
+NUM_OBJECTIVES = 4
+SPEED = 100
+
 class ObstacleParams:
     def __init__(self, x, i):
         self.l = x[f"l{i}"]
@@ -32,11 +35,23 @@ class MHSGenerator(object):
     def __init__(self, case_study_file: str) -> None:
         drone_test = DroneTest.from_yaml(case_study_file)
         # TODO: Check if there is a way to speed up the simulation
-        drone_test.test.speed = drone_test.simulation.speed = 10
+        drone_test.test.speed = SPEED
+        drone_test.simulation.speed = SPEED
         self.case_study = drone_test
 
     def generate(self, budget: int) -> List[TestCase]:
         test_cases = []
+
+        default_test = TestCase(self.case_study, [])
+        default_test.test.speed = SPEED
+        default_test.test.simulation.speed = SPEED
+        print("Executing mission without obstacle")
+        try:
+            default_test.execute()
+            print("Finished")
+        except Exception as e:
+            print("Exception during test execution, skipping the test")
+            print(e)
 
         class ObstacleProblem(Problem):
             def __init__(self):
@@ -49,7 +64,7 @@ class MHSGenerator(object):
                     vars[f"x{i}"] = Real(bounds=(MHSGenerator.min_position.x, MHSGenerator.max_position.x))
                     vars[f"y{i}"] = Real(bounds=(MHSGenerator.min_position.y, MHSGenerator.max_position.y))
                     vars[f"r{i}"] = Real(bounds=(MHSGenerator.min_position.r, MHSGenerator.max_position.r))
-                super().__init__(vars=vars, n_obj=1)
+                super().__init__(vars=vars, n_obj=NUM_OBJECTIVES)
 
             def _evaluate(self, x, out, *args, **kwargs):
                 num_obstacles = x[0]["n"]
@@ -72,6 +87,7 @@ class MHSGenerator(object):
                         (o.x - half_l * math.cos(math.radians(o.r)) + half_w * math.sin(math.radians(o.r)),
                             o.y - half_l * math.sin(math.radians(o.r)) - half_w * math.cos(math.radians(o.r)))
                     ]
+                    o.polygon = Polygon(o.corners)
 
                     obstacles.append(o)
 
@@ -84,28 +100,54 @@ class MHSGenerator(object):
                 ))
 
                 # Check for overlapping obstacles
-                polygons = [Polygon(obstacle.corners) for obstacle in obstacles]
                 num_overlapping = sum(1
                                       for i in range(num_obstacles)
                                       for j in range(i + 1, num_obstacles)
-                                      if polygons[i].intersects(polygons[j]))
+                                      if obstacles[i].polygon.intersects(obstacles[j].polygon))
+                
+                if (num_out_of_bound + num_overlapping) > 0:
+                    out["F"] = [float('inf'), float('inf'), float('inf'), float('inf')]
+                    return
+                
+                # Path is feasible
+                # TODO: This might be a bit too strong. Should we just leave it to test execution?
+                num_too_close = sum(1
+                                    for i in range(num_obstacles)
+                                    for j in range(i + 1, num_obstacles)
+                                    if obstacles[i].polygon.distance(obstacles[j].polygon) < 3)
+                
+                # At least one obstacle blocks some point of the default trajectory
+                min_distance_obstacle_to_trajectory = min(o.polygon.distance(default_test.trajectory.to_line()) for o in obstacles)
+                # This will be 0 if the trajectory crosses any obstacle
 
-                out["F"] = [num_out_of_bound + num_overlapping]
+                # Obstacles should be close to each other
+                sum_min_distance_between_obstacles = 0 if len(obstacles) == 1 else sum(
+                    obstacles[i].polygon.distance(obstacles[j].polygon)
+                    for i in range(num_obstacles)
+                    for j in range(i + 1, num_obstacles)
+                )
+
+                out["F"] = [
+                    num_too_close, 
+                    min_distance_obstacle_to_trajectory,
+                    sum_min_distance_between_obstacles,
+                    num_obstacles
+                ]
 
         problem = ObstacleProblem()
 
         algorithm = MixedVariableGA(pop_size=1, n_offsprings=1, survival=RankAndCrowdingSurvival())
 
-        termination = get_termination("time", "00:00:05")  # 5 seconds
+        termination = get_termination("time", "00:00:20")  # 20 seconds
 
         res = minimize(problem, algorithm, termination, verbose=1)
 
         print(res.X)
         obstacles = []
-        num_obstacles = res.X["n"]
+        num_obstacles = res.X[0]["n"]
         for i in range(num_obstacles):
-            size = Obstacle.Size(res.X[f"l{i}"], res.X[f"w{i}"], res.X[f"h{i}"])
-            position = Obstacle.Position(res.X[f"x{i}"], res.X[f"y{i}"], 0, res.X[f"r{i}"])
+            size = Obstacle.Size(res.X[0][f"l{i}"], res.X[0][f"w{i}"], res.X[0][f"h{i}"])
+            position = Obstacle.Position(res.X[0][f"x{i}"], res.X[0][f"y{i}"], 0, res.X[0][f"r{i}"])
             obstacle = Obstacle(size, position)
             obstacles.append(obstacle)
 
@@ -114,7 +156,10 @@ class MHSGenerator(object):
             .plot(obstacles = obstacles)
 
         test = TestCase(self.case_study, obstacles)
+        test.test.speed = SPEED
+        test.test.simulation.speed = SPEED
         try:
+            print("Executing mission with X = " + str(res.X[0]))
             test.execute()
             distances = test.get_distances()
             print(f"minimum_distance:{min(distances)}")
