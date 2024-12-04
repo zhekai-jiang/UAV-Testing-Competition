@@ -7,16 +7,18 @@ from testcase import TestCase
 from pymoo.optimize import minimize
 from pymoo.core.mixed import MixedVariableGA
 from pymoo.algorithms.moo.nsga2 import RankAndCrowding
-from pymoo.termination import get_termination
+from pymoo.core.termination import Termination
 from pymoo.core.problem import ElementwiseProblem
 import math
 from pymoo.core.variable import Real, Integer, BoundedVariable
 from shapely.geometry import Polygon, Point
+from shapely.validation import make_valid
+from shapely.affinity import rotate
 import csv
 from itertools import chain
 
 
-NUM_OBJECTIVES: int = 8
+NUM_OBJECTIVES: int = 10
 SPEED: int = 100
 
 min_size = Obstacle.Size(2, 2, 10)
@@ -65,6 +67,7 @@ class ObstaclePlacementProblem(ElementwiseProblem):
     def _evaluate(self, x: Dict[str, float], out: Dict[str, List[float]], *args, **kwargs):
         num_obstacles = x["n"]
 
+        # We want to put one obstacle at a time
         max_num_obstacles = max(e.depth + 1 for e in all_executions)
 
         if num_obstacles > max_num_obstacles:
@@ -79,75 +82,79 @@ class ObstaclePlacementProblem(ElementwiseProblem):
             # Calculate the rotated bounds for all four corners of the rectangle
             half_l = o.l / 2
             half_w = o.w / 2
-            o.corners = [
-                (o.x + half_l * math.cos(math.radians(o.r)) - half_w * math.sin(math.radians(o.r)),
-                    o.y + half_l * math.sin(math.radians(o.r)) + half_w * math.cos(math.radians(o.r))),
-                (o.x - half_l * math.cos(math.radians(o.r)) - half_w * math.sin(math.radians(o.r)),
-                    o.y - half_l * math.sin(math.radians(o.r)) + half_w * math.cos(math.radians(o.r))),
-                (o.x + half_l * math.cos(math.radians(o.r)) + half_w * math.sin(math.radians(o.r)),
-                    o.y + half_l * math.sin(math.radians(o.r)) - half_w * math.cos(math.radians(o.r))),
-                (o.x - half_l * math.cos(math.radians(o.r)) + half_w * math.sin(math.radians(o.r)),
-                    o.y - half_l * math.sin(math.radians(o.r)) - half_w * math.cos(math.radians(o.r)))
-            ]
-            o.polygon = Polygon(o.corners)
+            o.polygon = Polygon([(o.x - half_l, o.y - half_w), (o.x + half_l, o.y - half_w), (o.x + half_l, o.y + half_w), (o.x - half_l, o.y + half_w)])
+            o.polygon = rotate(o.polygon, o.r, use_radians=True)
+            # There was some weird issue with invalidity of geometry while taking intersection somehow.
+            # Now I use the shapely methods above instead of coding the transformations in triangular functions myself.
+            # In case this doesn't work still, the thing below may be a fix.
+            # if not o.polygon.is_valid:
+            #     o.polygon = make_valid(o.polygon)
 
             obstacle_params.append(o)
 
         # Check if all corners are within the allowed bounds after rotation
         # The output is the sum of distances that exceed the boundary, which we want to minimize (0)
-        sum_distance_out_of_bound = sum(
-            max(0, min_position.x - x) + max(0, x - max_position.x) + max(0, min_position.y - y) + max(0, y - max_position.y)
-            for o in obstacle_params for x, y in o.corners
-        )
+        distances_out_of_bound = [sum(max(0, min_position.x - x) + max(0, x - max_position.x) + max(0, min_position.y - y) + max(0, y - max_position.y) for x, y in o.polygon.exterior.coords[:4])
+                                  for o in obstacle_params]
 
         # Check for overlapping obstacles
-        area_overlapping = sum(obstacle_params[i].polygon.intersection(obstacle_params[j].polygon).area
-                               for i in range(num_obstacles)
-                               for j in range(i + 1, num_obstacles))
+        areas_overlapping = [sum(o.polygon.intersection(p.polygon).area for p in obstacle_params if p != o)
+                             for o in obstacle_params]
         
-        # Path is feasible, i.e., the distance between obstacles is at least 4
-        num_too_close = sum(max(0, 4 - obstacle_params[i].polygon.distance(obstacle_params[j].polygon))
-                            for i in range(num_obstacles)
-                            for j in range(i + 1, num_obstacles))
+        # To try to ensure the mission is feasible
+        sums_dists_to_others = [sum(o.polygon.distance(p.polygon) for p in obstacle_params if p != o)
+                                for o in obstacle_params]
         
-        # Obstacles should block all trajectories at their depth, determined also by the previous obstacles
-        sum_min_distance_obstacle_to_trajectory = 0
+        # Obstacles should block at least one trajectory at their depth, determined also by the previous obstacles
+        min_distances_obstacle_to_trajectory: List[float] = []
         execs_at_depth = set([e for e in all_executions if e.depth == 0])
         parent_execs = set()
         for depth in range(num_obstacles):
             # This will be 0 if the trajectory crosses the obstacle
-            sum_min_distance_obstacle_to_trajectory += sum(obstacle_params[depth].polygon.distance(e.testCase.trajectory.to_line()) for e in execs_at_depth)
+            min_distances_obstacle_to_trajectory.append(min(obstacle_params[depth].polygon.distance(e.testCase.trajectory.to_line()) for e in execs_at_depth))
             parent_execs = execs_at_depth
             execs_at_depth = set(chain.from_iterable(e.followup for e in execs_at_depth))
 
         # Obstacles should be close to each other
-        max_min_distance_to_other_obstacles = \
-            0 if len(obstacle_params) == 1 \
-            else max(
-                min(obstacle_params[i].polygon.distance(obstacle_params[j].polygon)
-                    for j in range(num_obstacles) if j != i
-                )
-                for i in range(num_obstacles)
-            )
+        # max_min_distance_to_other_obstacles = \
+        #     0 if len(obstacle_params) == 1 \
+        #     else max(
+        #         min(obstacle_params[i].polygon.distance(obstacle_params[j].polygon)
+        #             for j in range(num_obstacles) if j != i
+        #         )
+        #         for i in range(num_obstacles)
+        #     )
 
         # There should be something close to the starting point
         min_distance_to_start = min([self.starting_point.distance(o.polygon) for o in obstacle_params])
 
-        if sum_distance_out_of_bound + area_overlapping + num_too_close + sum_min_distance_obstacle_to_trajectory > 1e-7 \
-            or max_min_distance_to_other_obstacles > 10:
+        enforced_heuristics = [distances_out_of_bound[i] + areas_overlapping[i] + min_distances_obstacle_to_trajectory[i] for i in range(num_obstacles)]
+
+        enforced_heuristics += [sum(enforced_heuristics) / num_obstacles] * (3 - num_obstacles)
+        sums_dists_to_others += [sum(sums_dists_to_others) / num_obstacles] * (3 - num_obstacles)
+
+        if sum(enforced_heuristics) > 1e-7: # \
+            # or max_min_distance_to_other_obstacles > 10:
             out["F"] = [
                 0,
-                sum_distance_out_of_bound,
-                area_overlapping,
-                num_too_close, 
-                sum_min_distance_obstacle_to_trajectory if sum_distance_out_of_bound + area_overlapping + num_too_close < 1e-7 else float('inf'),
-                max_min_distance_to_other_obstacles if sum_distance_out_of_bound + area_overlapping + num_too_close + sum_min_distance_obstacle_to_trajectory < 1e-5 else float('inf'),
-                float('inf'),# min_distance_to_start,
-                # num_obstacles,
+                enforced_heuristics[0],
+                enforced_heuristics[1],
+                enforced_heuristics[2],
+                # sqrt to make it less important, minimize negation to maximize actual distance
+                -math.sqrt(sums_dists_to_others[0]),
+                -math.sqrt(sums_dists_to_others[1]),
+                -math.sqrt(sums_dists_to_others[2]),
+                # max_min_distance_to_other_obstacles if sum_distance_out_of_bound + area_overlapping + num_too_close + sum_min_distance_obstacle_to_trajectory < 1e-5 else float('inf'),
+                min_distance_to_start,
+                num_obstacles,
                 float('inf')
             ]
             print([x[k] for k in params_keys])
-            print([sum_distance_out_of_bound, area_overlapping, num_too_close, sum_min_distance_obstacle_to_trajectory, max_min_distance_to_other_obstacles])
+            print("Distances out of bound " + str(distances_out_of_bound))
+            print("Areas overlapping " + str(areas_overlapping))
+            print("Min distances to trajectory " + str(min_distances_obstacle_to_trajectory))
+            print("Min distances to others " + str(sums_dists_to_others))
+            print("Min distance to starting point " + str(min_distance_to_start))
         else:
             print("Executing mission with X = " + str(x))
             obstacles_test = [Obstacle(Obstacle.Size(o.l, o.w, o.h), Obstacle.Position(o.x, o.y, 0, o.r)) for o in obstacle_params]
@@ -159,6 +166,7 @@ class ObstaclePlacementProblem(ElementwiseProblem):
             min_distance = float('inf')
             try:
                 test.execute()
+                # TODO: Check for timeout?
                 distances = test.get_distances()
                 min_distance = min(distances)
                 print(f"minimum_distance:{min_distance}")
@@ -180,26 +188,32 @@ class ObstaclePlacementProblem(ElementwiseProblem):
                 if file.tell() == 0:
                     writer.writerow(params_keys + ["min_distance", "result"])
                 writer.writerow([x[k] for k in params_keys] + [min_distance, result])
-                print([x[k] for k in params_keys])
-                print([sum_distance_out_of_bound, area_overlapping, num_too_close, sum_min_distance_obstacle_to_trajectory, max_min_distance_to_other_obstacles, min_distance, result])
+            print([x[k] for k in params_keys])
+            print("Distances out of bound " + str(distances_out_of_bound))
+            print("Areas overlapping " + str(areas_overlapping))
+            print("Min distances to trajectory " + str(min_distances_obstacle_to_trajectory))
+            print("Min distances to others " + str(sums_dists_to_others))
+            print("Min distance to starting point " + str(min_distance_to_start))
 
             out["F"] = [
                 0,
-                sum_distance_out_of_bound,
-                area_overlapping,
-                num_too_close, 
-                sum_min_distance_obstacle_to_trajectory,
-                max_min_distance_to_other_obstacles,
+                enforced_heuristics[0],
+                enforced_heuristics[1],
+                enforced_heuristics[2],
+                # sqrt to make it less important, minimize negation to maximize actual distance
+                -math.sqrt(sums_dists_to_others[0]),
+                -math.sqrt(sums_dists_to_others[1]),
+                -math.sqrt(sums_dists_to_others[2]),
+                # max_min_distance_to_other_obstacles if sum_distance_out_of_bound + area_overlapping + num_too_close + sum_min_distance_obstacle_to_trajectory < 1e-5 else float('inf'),
                 min_distance_to_start,
-                # num_obstacles,
-                result
+                num_obstacles,
+                result ** 3 # Make it super important
             ]
 
 class MHSGenerator(object):
 
     def __init__(self, case_study_file: str) -> None:
         drone_test = DroneTest.from_yaml(case_study_file)
-        # TODO: Check if there is a way to speed up the simulation
         drone_test.test.speed = SPEED
         drone_test.simulation.speed = SPEED
         self.case_study = drone_test
@@ -221,9 +235,15 @@ class MHSGenerator(object):
         problem = ObstaclePlacementProblem(self.case_study, Point(default_test.trajectory.to_line().coords[0]))
 
         algorithm = MixedVariableGA(pop_size=5, n_offsprings=5, survival=RankAndCrowding())
+        # TODO: Change population and offspring sizes, and maybe survival strategy
 
-        termination = get_termination("time", "01:30:00")  # hours:minutes:seconds
-        # TODO: Get a better termination criterion
+
+        class ObstaclePlacementTermination(Termination):
+            def _update(self, algorithm):
+                return 1 if len(all_executions) >= budget else 0
+
+        termination = ObstaclePlacementTermination()
+
 
         res = minimize(problem, algorithm, termination, verbose=1)
 
@@ -234,4 +254,4 @@ class MHSGenerator(object):
 
 if __name__ == "__main__":
     generator = MHSGenerator("case_studies/mission1.yaml")
-    generator.generate(2)
+    generator.generate(200)
