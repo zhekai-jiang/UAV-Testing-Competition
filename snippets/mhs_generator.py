@@ -16,6 +16,7 @@ from shapely.validation import make_valid
 from shapely.affinity import rotate
 import csv
 from itertools import chain
+import time
 
 
 NUM_OBJECTIVES: int = 10
@@ -161,6 +162,7 @@ class ObstaclePlacementProblem(ElementwiseProblem):
             test = TestCase(self.case_study, obstacles_test)
             Trajectory(positions = [Position(0, 0, 0, 0, 0), Position(0, 0, 0, 0, 0)]) \
                 .plot(obstacles = obstacles_test)
+            time.sleep(1)
             test.test.speed = SPEED
             test.test.simulation.speed = SPEED
             min_distance = float('inf')
@@ -171,6 +173,7 @@ class ObstaclePlacementProblem(ElementwiseProblem):
                 min_distance = min(distances)
                 print(f"minimum_distance:{min_distance}")
                 test.plot()
+                time.sleep(1)
             except Exception as e:
                 print("Exception during test execution, skipping the test")
                 print(e)
@@ -226,6 +229,7 @@ class MHSGenerator(object):
         try:
             default_test.execute()
             default_test.plot()
+            time.sleep(1)
             print("Finished")
             all_executions.append(Execution(default_test, 0, float('inf')))
         except Exception as e:
