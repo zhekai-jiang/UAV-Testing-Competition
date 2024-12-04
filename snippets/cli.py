@@ -6,7 +6,7 @@ import os
 import shutil
 import sys
 from decouple import config
-from random_generator import RandomGenerator
+from mhs_generator import MHSGenerator
 
 TESTS_FOLDER = config("TESTS_FOLDER", default="./generated_tests/")
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ if __name__ == "__main__":
     config_loggers()
     try:
         args = arg_parse()
-        generator = RandomGenerator(case_study_file=args.test)
+        generator = MHSGenerator(case_study_file=args.test)
         test_cases = generator.generate(args.budget)
 
         ### copying the test cases to the output folder
