@@ -83,7 +83,7 @@ class ObstaclePlacementProblem(ElementwiseProblem):
             half_l = o.l / 2
             half_w = o.w / 2
             o.polygon = Polygon([(o.x - half_l, o.y - half_w), (o.x + half_l, o.y - half_w), (o.x + half_l, o.y + half_w), (o.x - half_l, o.y + half_w)])
-            o.polygon = rotate(o.polygon, o.r, use_radians=True)
+            o.polygon = rotate(o.polygon, o.r)
             # There was some weird issue with invalidity of geometry while taking intersection somehow.
             # Now I use the shapely methods above instead of coding the transformations in triangular functions myself.
             # In case this doesn't work still, the thing below may be a fix.
