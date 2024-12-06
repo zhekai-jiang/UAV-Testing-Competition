@@ -12,7 +12,6 @@ from pymoo.core.problem import ElementwiseProblem
 import math
 from pymoo.core.variable import Real, Integer, BoundedVariable
 from shapely.geometry import Polygon, Point
-from shapely.validation import make_valid
 from shapely.affinity import rotate
 import csv
 from itertools import chain
@@ -22,16 +21,18 @@ import time
 NUM_OBJECTIVES: int = 10
 SPEED: int = 100
 
-min_size = Obstacle.Size(2, 2, 10)
-max_size = Obstacle.Size(20, 20, 25)
+min_size = Obstacle.Size(14, 7, 15)
+max_size = Obstacle.Size(20, 20, 15)
 min_position = Obstacle.Position(-40, 10, 0, 0)
 max_position = Obstacle.Position(30, 40, 0, 90)
 
 class Execution:
-    def __init__(self, testCase: TestCase, depth: int, result: float) -> None:
+    def __init__(self, params_vector: List[float], testCase: TestCase, depth: int, result: float, output: List[float]) -> None:
+        self.params_vector = params_vector
         self.testCase = testCase
-        self.result = result
         self.depth = depth
+        self.result = result
+        self.output = output
         self.followup: List[Execution] = []
 
 all_executions: List[Execution] = []
@@ -55,11 +56,11 @@ class ObstaclePlacementProblem(ElementwiseProblem):
         self.case_study = case_study
         self.starting_point = starting_point
         vars: Dict[str, BoundedVariable] = {}
-        vars["n"] = Integer(bounds=(1, 3))
+        vars["n"] = Integer(bounds=(1, 3)) # TODO: Decide on whether we want to always have 2 obstacles
         for i in range(3):
             vars[f"l{i}"] = Real(bounds=(min_size.l, max_size.l))
             vars[f"w{i}"] = Real(bounds=(min_size.w, max_size.w))
-            vars[f"h{i}"] = Real(bounds=(min_size.h, max_size.h))
+            vars[f"h{i}"] = Real(bounds=(min_size.h, max_size.h)) # TODO: Maybe remove height
             vars[f"x{i}"] = Real(bounds=(min_position.x, max_position.x))
             vars[f"y{i}"] = Real(bounds=(min_position.y, max_position.y))
             vars[f"r{i}"] = Real(bounds=(min_position.r, max_position.r))
@@ -117,14 +118,14 @@ class ObstaclePlacementProblem(ElementwiseProblem):
             execs_at_depth = set(chain.from_iterable(e.followup for e in execs_at_depth))
 
         # Obstacles should be close to each other
-        # max_min_distance_to_other_obstacles = \
-        #     0 if len(obstacle_params) == 1 \
-        #     else max(
-        #         min(obstacle_params[i].polygon.distance(obstacle_params[j].polygon)
-        #             for j in range(num_obstacles) if j != i
-        #         )
-        #         for i in range(num_obstacles)
-        #     )
+        max_min_distance_to_other_obstacles = \
+            0 if len(obstacle_params) == 1 \
+            else max(
+                min(obstacle_params[i].polygon.distance(obstacle_params[j].polygon)
+                    for j in range(num_obstacles) if j != i
+                )
+                for i in range(num_obstacles)
+            )
 
         # There should be something close to the starting point
         min_distance_to_start = min([self.starting_point.distance(o.polygon) for o in obstacle_params])
@@ -134,19 +135,19 @@ class ObstaclePlacementProblem(ElementwiseProblem):
         enforced_heuristics += [sum(enforced_heuristics) / num_obstacles] * (3 - num_obstacles)
         sums_dists_to_others += [sum(sums_dists_to_others) / num_obstacles] * (3 - num_obstacles)
 
-        if sum(enforced_heuristics) > 1e-7: # \
-            # or max_min_distance_to_other_obstacles > 10:
+        if sum(enforced_heuristics) > 1e-7 \
+            or max_min_distance_to_other_obstacles > 20:
             out["F"] = [
                 0,
                 enforced_heuristics[0],
                 enforced_heuristics[1],
                 enforced_heuristics[2],
                 # sqrt to make it less important, minimize negation to maximize actual distance
-                -math.sqrt(sums_dists_to_others[0]),
-                -math.sqrt(sums_dists_to_others[1]),
-                -math.sqrt(sums_dists_to_others[2]),
+                math.sqrt(sums_dists_to_others[0]),
+                math.sqrt(sums_dists_to_others[1]),
+                math.sqrt(sums_dists_to_others[2]),
                 # max_min_distance_to_other_obstacles if sum_distance_out_of_bound + area_overlapping + num_too_close + sum_min_distance_obstacle_to_trajectory < 1e-5 else float('inf'),
-                min_distance_to_start,
+                math.sqrt(min_distance_to_start),
                 num_obstacles,
                 float('inf')
             ]
@@ -157,6 +158,17 @@ class ObstaclePlacementProblem(ElementwiseProblem):
             print("Min distances to others " + str(sums_dists_to_others))
             print("Min distance to starting point " + str(min_distance_to_start))
         else:
+            # Do not execute things that were already run before
+            # This also helps us avoid executing test cases that are really too similar to existing things
+            # Either just a small change, or for example it only changes the parameters of the third thing when we have only two obstacles
+            params_vector = [num_obstacles] + [getattr(o, p) for p in ["l", "w", "h", "x", "y", "r"] for o in obstacle_params] + [0] * (6 * (3 - num_obstacles))
+            existing_execs = [e for e in all_executions if sum((x - y) ** 2 for x, y in zip(e.params_vector, params_vector)) < 1]
+            # We may think about the threshold for similarity (squared distance). I think 1 is not bad. If obstacles are different by less than 1 unit, they may be too similar?
+            if len(existing_execs) > 0:
+                out["F"] = existing_execs[0].output
+                print("Skipped, too similar to a previous execution " + str(existing_execs[0].params_vector))
+                return
+
             print("Executing mission with X = " + str(x))
             obstacles_test = [Obstacle(Obstacle.Size(o.l, o.w, o.h), Obstacle.Position(o.x, o.y, 0, o.r)) for o in obstacle_params]
             test = TestCase(self.case_study, obstacles_test)
@@ -181,10 +193,6 @@ class ObstaclePlacementProblem(ElementwiseProblem):
                 else 3 if min_distance < 1 \
                 else 4 if min_distance < 1.5 \
                 else min_distance + 5
-            e = Execution(test, num_obstacles, result)
-            for parent in parent_execs:
-                parent.followup.append(e)
-            all_executions.append(e)
             test_cases.append(test)
             with open('results.csv', mode='a', newline='') as file:
                 writer = csv.writer(file)
@@ -204,14 +212,19 @@ class ObstaclePlacementProblem(ElementwiseProblem):
                 enforced_heuristics[1],
                 enforced_heuristics[2],
                 # sqrt to make it less important, minimize negation to maximize actual distance
-                -math.sqrt(sums_dists_to_others[0]),
-                -math.sqrt(sums_dists_to_others[1]),
-                -math.sqrt(sums_dists_to_others[2]),
+                math.sqrt(sums_dists_to_others[0]),
+                math.sqrt(sums_dists_to_others[1]),
+                math.sqrt(sums_dists_to_others[2]),
                 # max_min_distance_to_other_obstacles if sum_distance_out_of_bound + area_overlapping + num_too_close + sum_min_distance_obstacle_to_trajectory < 1e-5 else float('inf'),
-                min_distance_to_start,
+                math.sqrt(min_distance_to_start),
                 num_obstacles,
                 result ** 3 # Make it super important
             ]
+
+            e = Execution(params_vector, test, num_obstacles, result, out["F"])
+            for parent in parent_execs:
+                parent.followup.append(e)
+            all_executions.append(e)
 
 class MHSGenerator(object):
 
@@ -231,14 +244,14 @@ class MHSGenerator(object):
             default_test.plot()
             time.sleep(1)
             print("Finished")
-            all_executions.append(Execution(default_test, 0, float('inf')))
+            all_executions.append(Execution([0] * 19, default_test, 0, float('inf'), [0] * (NUM_OBJECTIVES - 1) + [float('inf')]))
         except Exception as e:
             print("Exception during test execution, skipping the test")
             print(e)
 
         problem = ObstaclePlacementProblem(self.case_study, Point(default_test.trajectory.to_line().coords[0]))
 
-        algorithm = MixedVariableGA(pop_size=5, n_offsprings=5, survival=RankAndCrowding())
+        algorithm = MixedVariableGA(pop_size=50, n_offsprings=100, survival=RankAndCrowding())
         # TODO: Change population and offspring sizes, and maybe survival strategy
 
 
@@ -253,9 +266,9 @@ class MHSGenerator(object):
 
         ### You should only return the test cases
         ### that are needed for evaluation (failing or challenging ones)
-        return test_cases
+        return list(map(lambda e: e.testCase, sorted(all_executions, key=lambda e: e.result)))
 
 
 if __name__ == "__main__":
-    generator = MHSGenerator("case_studies/mission1.yaml")
+    generator = MHSGenerator("case_studies/mission2.yaml")
     generator.generate(200)
