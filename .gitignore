@@ -2,7 +2,7 @@ logs/
 tmp/
 .env
 venv/
-snippets/results/
+snippets/results*/
 snippets/generated_tests/
 .DS_Store
 .huskyrc.json
