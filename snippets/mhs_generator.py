@@ -21,7 +21,7 @@ import time
 NUM_OBJECTIVES: int = 10
 SPEED: int = 100
 
-min_size = Obstacle.Size(14, 7, 15)
+min_size = Obstacle.Size(10, 7, 15)
 max_size = Obstacle.Size(20, 20, 15)
 min_position = Obstacle.Position(-40, 10, 0, 0)
 max_position = Obstacle.Position(30, 40, 0, 90)
