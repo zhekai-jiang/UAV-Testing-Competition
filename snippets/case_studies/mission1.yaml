@@ -7,16 +7,16 @@ simulation:
   simulator: ros #{gazebo, jmavsim, ros} 
   speed: 1
   headless: true
-  # obstacles:
-  # - size:
-  #     l: 10
-  #     w: 5
-  #     h: 20
-  #   position:
-  #     x: 10
-  #     y: 20
-  #     z: 0
-  #     r: 0
+  obstacles:
+  - size:
+      l: 20
+      w: 12
+      h: 20
+    position:
+      x: 5.5
+      y: 18
+      z: 0
+      r: 20
   # - size:
   #     l: 10
   #     w: 5
