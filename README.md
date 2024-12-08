@@ -8,7 +8,7 @@ Example:
 
 ## Authors
 
-| Name             | Email                    | Affiliation           |
-|:-----------------|:-------------------------|:----------------------|
-| Zhekai Jiang     | zhekai.jiang@epfl.ch     | EPFL                  |
-| Aren A. Babikian | babikian@cs.utoronto.edu | University of Toronto |
+| Name             | Email                   | Affiliation           |
+|:-----------------|:------------------------|:----------------------|
+| Zhekai Jiang     | zhekai.jiang@epfl.ch    | EPFL                  |
+| Aren A. Babikian | babikian@cs.toronto.edu | University of Toronto |
