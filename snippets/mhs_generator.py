@@ -1,36 +1,28 @@
 from typing import List, Tuple, Dict
 from aerialist.px4.drone_test import DroneTest
 from aerialist.px4.obstacle import Obstacle
-from aerialist.px4.trajectory import Trajectory
-from aerialist.px4.position import Position
+import numpy as np
 from testcase import TestCase
 from pymoo.optimize import minimize
-from pymoo.core.mixed import MixedVariableGA
-from pymoo.algorithms.moo.nsga2 import RankAndCrowding
 from pymoo.core.termination import Termination
 from pymoo.core.problem import ElementwiseProblem
 import math
-from pymoo.core.variable import Real, Integer, BoundedVariable
 from shapely.geometry import Polygon, Point
-from shapely.validation import make_valid
 from shapely.affinity import rotate
 import csv
-from itertools import chain
 import time
 
 from pymoo.util.ref_dirs import get_reference_directions
 from pymoo.algorithms.moo.nsga3 import NSGA3
-from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.termination.max_time import TimeBasedTermination
 
 
 NUM_OBJECTIVES: int = 3
 NUM_VARIABLES: int = 10
 SPEED: int = 100
 
-min_size = Obstacle.Size(7, 10, 10)
-max_size = Obstacle.Size(20, 20, 25)
-min_position = Obstacle.Position(-40, 10, 0, 0) # TODO MAYBE 10 to 80 angle range?
+min_size = Obstacle.Size(7, 10, 15)
+max_size = Obstacle.Size(20, 20, 15)
+min_position = Obstacle.Position(-40, 10, 0, 0)
 max_position = Obstacle.Position(30, 40, 0, 90)
 height = 15
 
@@ -38,19 +30,29 @@ DIST_TOLERANCE = 5 # TODO MAYBE optimize these values?
 DIST_OBS_MAX = 16
 DIST_OBS_MIN = 8
 DIST_START_TOLERANCE = 5
-SCENARIO_SIMILARITY_THRESHOLD = 3 # TODO Test this out
+SCENARIO_SIMILARITY_THRESHOLD = 0.2 # TODO Test this out
 
 class Execution:
-    def __init__(self, testCase: TestCase, depth: int, result: float) -> None:
+    def __init__(self, params_vector: List[float], testCase: TestCase, min_distance: float, result: float) -> None:
+        self.params_vector = params_vector
         self.testCase = testCase
+        self.min_distance = min_distance
         self.result = result
-        self.depth = depth
-        self.followup: List[Execution] = []
 
+BUDGET: int = 200
 all_executions: List[Execution] = []
 initial_execution: List[Execution] = []
+good_single_obstacle_tests: List[TestCase] = []
 test_cases: List[TestCase] = []
-simulations = []
+
+initial_population_fixed = [
+    [0.5248214908364522,0.1728250063428862,0.380872169470668,0.32746438646966014, 0.4224165503721484, 0.0633264672176352,0.7030562867295299,0.7265519774157527,0.4427178720414508, 0.00390712094969714], # 0
+    [0.028888049824159157,0.07755462712603683,0.41712032578357994,0.2283720200961537, 0.7486728307315297, 0.06165770740907471,0.873677211665613,0.6415718765772439,0.6616778443126642, 0.8025448773926038], # 0.91
+    [0.028888049824159157,0.07755462712603683,0.41712032578357994,0.6616778443126642, 0.7486728307315297,
+     0.06165770740907471,0.873677211665613,0.6415718765772439,    0.2283720200961537, 0.8025448773926038],
+    [0.516779953730593,0.6168793554484786,0.409314811389346,0.32219672414981126, 0.13530056143545108, 0.11383979587593976,0.7009896726535482,0.718787611005901,0.8535107450924464, 0.966362157736934], # 1.11
+    [0.5167791040739792,0.6168720588870445,0.4091818198611974,0.3287955613619398, 0.7473642659997762, 0.00312072688042582,0.7009896726535482,0.7188264559851381,0.8583628486323605, 0.9660296547041434], # 1.45
+]
 
 def denormalize(v, min_val, max_val):
     val =  min_val + (max_val-min_val)*v
@@ -101,7 +103,10 @@ class ObstaclePlacementProblem(ElementwiseProblem):
         super().__init__(n_var=NUM_VARIABLES, n_obj=NUM_OBJECTIVES, n_constr=0, xl=0.0, xu=1.0)
 
 
-    def _evaluate(self, x: Dict[str, float], out: Dict[str, List[float]], *args, **kwargs):
+    def _evaluate(self, x: List[float], out: Dict[str, List[float]], *args, **kwargs):
+        global BUDGET
+        global all_executions
+
         # num_obstacles = x["n"]
         num_obstacles = 2
         # print(x)
@@ -215,7 +220,7 @@ class ObstaclePlacementProblem(ElementwiseProblem):
         # print(oob_2, max(0, dis_path_2-DIST_TOLERANCE), max(0, dis_oth_2-DIST_OBS_TOLERANCE), math.sqrt(ovr_2))
         # print('---')
 
-        if heu_1+heu_2 > 1e-3: # \
+        if heu_1+heu_2 > 1e-3 and min(sum(abs(a - b) for a, b in zip(x, known_x)) for known_x in initial_population_fixed) > 1e-3:
             ###############
             # SCENARIO INVALID
             # or max_min_distance_to_other_obstacles > 10:
@@ -236,7 +241,7 @@ class ObstaclePlacementProblem(ElementwiseProblem):
             out["F"] = [
                 heu_1,
                 heu_2,
-                1000000 # TODO MAYBE optimize this, to focus more on finding failures
+                1000000
             ]
             # print([x[k] for k in params_keys])
             # print(x)
@@ -257,7 +262,9 @@ class ObstaclePlacementProblem(ElementwiseProblem):
             # Check if similar scenario has already been run
             cur_encoding =  list(x)
             duplicate_found = False
-            for encoding, res in simulations:
+            for e in all_executions:
+                encoding = e.params_vector
+                res = e.result
                 diff = sum(abs(a - b) for a, b in zip(cur_encoding, encoding))
                 if diff < SCENARIO_SIMILARITY_THRESHOLD:
                     duplicate_found = True
@@ -268,12 +275,12 @@ class ObstaclePlacementProblem(ElementwiseProblem):
                     break
             
             # Simulation not run
-            if duplicate_found:
+            if duplicate_found or len(all_executions) + 3 >= BUDGET:
                 print("<<<Skipping - Duplicate>>>")
                 out["F"] = [
                     heu_1,
                     heu_2,
-                    res ** 3 # TODO MAYBE optimize this, to focus more on finding failures
+                    res
                 ]
                 return
 
@@ -298,20 +305,26 @@ class ObstaclePlacementProblem(ElementwiseProblem):
                 out["F"] = [
                     heu_1,
                     heu_2,
-                    1000000 # TODO MAYBE optimize this, to focus more on finding failures
+                    1000000
                 ]
                 return
 
             # GATHER RESULTS
-            result = 0 if min_distance < 0.25 \
-                else 3 if min_distance < 1 \
-                else 4 if min_distance < 1.5 \
-                else min_distance + 8.5
-            e = Execution(test, num_obstacles, result)
+            result = min_distance ** 3 \
+                + (3 if min_distance >= 0.25 else 0) \
+                + 1 * (max(0, min_distance - 0.25) ** 2) \
+                + (1 if min_distance >= 1 else 0) \
+                + 2 * (max(0, min_distance - 1) ** 2) \
+                + (4.5 if min_distance >= 1.5 else 0) \
+                + math.log(max(0, min_distance - 1.5) + 1, 1.5)
+            # 0 if min_distance < 0.25 \
+            #     else 3 if min_distance < 1 \
+            #     else 4 if min_distance < 1.5 \
+            #     else min_distance + 8.5
+            e = Execution(list(x), test, min_distance, result)
             # for parent in parent_execs:
             #     parent.followup.append(e)
             all_executions.append(e)
-            simulations.append([list(x), result])
             test_cases.append(test)
 
             # SAVE INFO
@@ -324,7 +337,7 @@ class ObstaclePlacementProblem(ElementwiseProblem):
             out["F"] = [
                 heu_1,
                 heu_2,
-                result ** 3 # TODO MAYBE optimize this, to focus more on finding failures
+                result
             ]
             # print([x[k] for k in params_keys])
             # print(x)
@@ -360,6 +373,9 @@ class MHSGenerator(object):
         self.case_study = drone_test
 
     def generate(self, budget: int) -> List[TestCase]:
+        global BUDGET
+        global all_executions
+        BUDGET = budget
         default_test = TestCase(self.case_study, [])
         default_test.test.speed = SPEED
         default_test.test.simulation.speed = SPEED
@@ -370,24 +386,44 @@ class MHSGenerator(object):
             default_test.plot()
             time.sleep(1)
             print("Finished")
-            initial_execution.append(Execution(default_test, 0, float('inf')))
+            initial_execution.append(Execution([], default_test, float('inf'), float('inf')))
             # all_executions.append(Execution(default_test, 0, float('inf')))
         except Exception as e:
             print("Exception during test execution, skipping the test")
             print(e)
             exit()
+        
+
+        single_obstacle_test_cases = [
+            TestCase(self.case_study, [Obstacle(Obstacle.Size(20, 12, 20), Obstacle.Position(5.5, 19.5, 0, 20))]),
+            TestCase(self.case_study, [Obstacle(Obstacle.Size(12, 20, 20), Obstacle.Position(-5.5, 19.5, 0, 70))])
+        ]
+        for t in single_obstacle_test_cases:
+            try:
+                print("Executing mission with one obstacle")
+                t.execute()
+                t.plot()
+                time.sleep(1)
+                print("Finished")
+                min_distance = min(t.get_distances())
+                if min_distance < 1.5:
+                    good_single_obstacle_tests.append(t)
+            except Exception as e:
+                print("Exception during test execution, skipping the test")
+                print(e)
 
         problem = ObstaclePlacementProblem(self.case_study, Point(default_test.trajectory.to_line().coords[0]))
 
         # algorithm = MixedVariableGA(pop_size=50, n_offsprings=100, survival=RankAndCrowding())
         ref_dirs = get_reference_directions("das-dennis", n_dim=NUM_OBJECTIVES, n_partitions=1)
-        algorithm = NSGA3(ref_dirs=ref_dirs, pop_size=50, n_offsprings=100, eliminate_duplicates=True)
+        initial_population = np.concatenate((initial_population_fixed, np.random.random((50 - len(initial_population_fixed), NUM_VARIABLES))))
+        algorithm = NSGA3(ref_dirs=ref_dirs, pop_size=50, n_offsprings=100, eliminate_duplicates=True, sampling=initial_population)
         # algorithm = NSGA2(pop_size=50, n_offsprings=100)
 
 
         class ObstaclePlacementTermination(Termination):
             def _update(self, algorithm):
-                r = 1 if len(all_executions) >= budget else 0
+                r = 1 if len(all_executions) + 3 >= budget else 0
                 # print(r)
                 return r
                 return (len(all_executions)+1)/(budget+1)
@@ -399,7 +435,9 @@ class MHSGenerator(object):
 
         ### You should only return the test cases
         ### that are needed for evaluation (failing or challenging ones)
-        return test_cases # TODO copy the selection and retuirn stuff from Zhekai's branch
+        return good_single_obstacle_tests \
+                + [e.testCase for e in
+                   sorted([e for e in all_executions if e.min_distance < 1.5], key=lambda e: e.result)]
 
 
 if __name__ == "__main__":
