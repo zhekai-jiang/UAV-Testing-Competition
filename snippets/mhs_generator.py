@@ -287,7 +287,7 @@ class ObstaclePlacementProblem(ElementwiseProblem):
 
             # RUN SIMULATION
             print("<<<Executing>>>")
-            obstacles_test = [Obstacle(Obstacle.Size(o.l, o.w, height), Obstacle.Position(o.x, o.y, 0, o.r)) for o in obstacle_params]
+            obstacles_test = [Obstacle(Obstacle.Size(float(o.l), float(o.w), height), Obstacle.Position(float(o.x), float(o.y), 0, float(o.r))) for o in obstacle_params]
             test = TestCase(self.case_study, obstacles_test)
             test.test.speed = SPEED
             test.test.simulation.speed = SPEED
